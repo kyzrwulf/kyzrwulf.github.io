@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Ask My Library</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DotGothic16&display=swap" rel="stylesheet">
+<style>
+  :root { --ink: #111; --paper: #fff; --dot: 9px; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; min-height: 100%; }
+  body {
+    background: var(--paper); color: var(--ink);
+    font-family: "DotGothic16", ui-monospace, Menlo, monospace;
+    display: flex; flex-direction: column; align-items: center; overflow-x: hidden;
+    padding: max(1.5rem, env(safe-area-inset-top)) 0 max(1.5rem, env(safe-area-inset-bottom));
+  }
+  .orb {
+    position: relative; width: min(92vw, 26rem); aspect-ratio: 1; border-radius: 50%;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 1.1rem; padding: 14% 8% 10%; text-align: center; z-index: 1;
+  }
+  .orb::before {
+    content: ""; position: absolute; inset: 0; border-radius: 50%; z-index: -1;
+    background: radial-gradient(circle, #000 1.3px, transparent 2px) 0 0 / var(--dot) var(--dot);
+    -webkit-mask: radial-gradient(circle, transparent 48%, #000 99%);
+    mask: radial-gradient(circle, transparent 48%, #000 99%);
+  }
+  .base {
+    width: min(112vw, 34rem); height: 9rem; margin-top: -4.5rem; z-index: 0;
+    border-radius: 50% 50% 0 0 / 100% 100% 0 0;
+    background: radial-gradient(circle, #000 2.6px, transparent 3.3px) 0 0 / 11px 11px;
+    -webkit-mask: linear-gradient(#000 25%, transparent);
+    mask: linear-gradient(#000 25%, transparent);
+  }
+  h1 { font-weight: 400; font-size: clamp(2.6rem, 14vw, 4.2rem); line-height: 1; margin: .2rem 0 .3rem; letter-spacing: -.02em; }
+  .sources { display: flex; gap: .5rem; flex-wrap: wrap; justify-content: center; margin: .8rem 1rem 0; }
+  .sources label { cursor: pointer; }
+  .sources input { position: absolute; opacity: 0; }
+  .sources span { display: inline-block; padding: .35rem .8rem; border: 1.5px solid var(--ink); border-radius: 999px; font-size: .95rem; }
+  .sources input:checked + span { background: var(--ink); color: var(--paper); }
+  .sources input:focus-visible + span, button:focus-visible, textarea:focus-visible { outline: 2px solid #1a6bff; outline-offset: 3px; }
+  button {
+    font: inherit; font-size: 1.1rem; background: #1b1c1a; color: #fff; border: 0;
+    border-radius: 14px; padding: .8rem 2.4rem; cursor: pointer;
+  }
+  button:disabled { opacity: .5; cursor: default; }
+  .bars { display: flex; align-items: center; gap: .8rem; width: 100%; }
+  .bars::before, .bars::after { content: ""; width: 2px; align-self: stretch; background: var(--ink); }
+  textarea, #qtext {
+    flex: 1; min-width: 0; font: inherit; font-size: 1.3rem; line-height: 1.3; text-align: center;
+    background: transparent; border: 0; color: var(--ink); resize: none; padding: .3rem 0;
+  }
+  textarea::placeholder { color: #777; }
+  iframe { width: 100%; height: 152px; border: 0; border-radius: 14px; background: #1f1f1f; }
+  #status { min-height: 1.3rem; margin: 1rem 1.5rem 0; text-align: center; font-size: .95rem; z-index: 1; }
+  #status.err { color: #c4002f; }
+  small { position: relative; z-index: 1; letter-spacing: .08em; margin-top: .5rem; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+  <div class="orb">
+    <div id="login" hidden><button id="connect">Connect Spotify</button></div>
+
+    <div id="ask" hidden>
+      <div class="bars"><textarea id="q" rows="2" maxlength="140" placeholder="ask a question…" aria-label="Your question"></textarea></div>
+      <p style="margin:1.1rem 0 0"><button id="go">Ask</button></p>
+    </div>
+
+    <div id="result" hidden style="width:100%">
+      <div class="bars"><div id="qtext"></div></div>
+      <div style="margin:1.1rem 0"><iframe id="player" allow="encrypted-media; clipboard-write" title="Spotify player"></iframe></div>
+      <button id="again">Ask Again</button>
+    </div>
+  </div>
+  <div class="base"></div>
+
+  <h1>ask my library</h1>
+  <small>FROM YOUR OWN SPOTIFY</small>
+
+  <div class="sources" id="sources" hidden>
+    <label><input type="checkbox" id="s-liked" checked><span>liked songs</span></label>
+    <label><input type="checkbox" id="s-albums" checked><span>saved albums</span></label>
+    <label><input type="checkbox" id="s-playlists" checked><span>playlists</span></label>
+  </div>
+  <p id="status" role="status"></p>
+
+<script>
+// ---- SETUP: paste your Client ID from developer.spotify.com/dashboard ----
+const CLIENT_ID = "PASTE_YOUR_CLIENT_ID_HERE";
+// Add exactly this address as a Redirect URI in your Spotify app settings.
+const REDIRECT = location.origin + location.pathname;
+const SCOPE = "user-library-read playlist-read-private playlist-read-collaborative";
+
+const $ = id => document.getElementById(id);
+const setStatus = (m, err) => { $("status").textContent = m || ""; $("status").className = err ? "err" : ""; };
+const store = {
+  get: k => { try { return sessionStorage.getItem(k); } catch { return null; } },
+  set: (k, v) => { try { sessionStorage.setItem(k, v); } catch {} },
+  del: k => { try { sessionStorage.removeItem(k); } catch {} }
+};
+const rand = n => Math.floor(Math.random() * n);
+const lib = { liked: [], albums: [], playlists: [] };
+const pageCache = {};
+
+// ---- PKCE login ----
+const b64 = buf => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+async function login() {
+  const verifier = b64(crypto.getRandomValues(new Uint8Array(48)));
+  const challenge = b64(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier)));
+  store.set("verifier", verifier);
+  location.href = "https://accounts.spotify.com/authorize?" + new URLSearchParams({
+    client_id: CLIENT_ID, response_type: "code", redirect_uri: REDIRECT,
+    scope: SCOPE, code_challenge_method: "S256", code_challenge: challenge
+  });
+}
+async function exchange(code) {
+  const r = await fetch("https://accounts.spotify.com/api/token", {
+    method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ client_id: CLIENT_ID, grant_type: "authorization_code", code, redirect_uri: REDIRECT, code_verifier: store.get("verifier") || "" })
+  });
+  if (!r.ok) throw new Error("Login failed. Check your Client ID and redirect URI.");
+  const d = await r.json();
+  store.set("token", d.access_token);
+  store.set("expires", String(Date.now() + d.expires_in * 1000));
+}
+
+// ---- API helpers ----
+async function api(url) {
+  const r = await fetch(url, { headers: { Authorization: "Bearer " + store.get("token") } });
+  if (r.status === 401) { store.del("token"); throw new Error("Session expired. Reload and connect again."); }
+  if (r.status === 403) throw new Error("Spotify refused access. Add your email under User Management in your app settings.");
+  if (!r.ok) throw new Error("Spotify error " + r.status);
+  return r.json();
+}
+async function eachPage(url, fn) {
+  while (url) { const d = await api(url); fn(d); url = d.next; }
+}
+
+// ---- Load library ----
+async function loadLibrary() {
+  const notes = [];
+  try {
+    await eachPage("https://api.spotify.com/v1/me/tracks?limit=50", d => {
+      for (const it of d.items) if (it.track && it.track.id) lib.liked.push(it.track.id);
+      setStatus("reading liked songs… " + lib.liked.length);
+    });
+  } catch (e) { if (!lib.liked.length) notes.push("liked songs"); }
+  try {
+    await eachPage("https://api.spotify.com/v1/me/albums?limit=50", d => {
+      for (const it of d.items) for (const t of (it.album.tracks?.items || [])) if (t.id) lib.albums.push(t.id);
+      setStatus("reading saved albums… " + lib.albums.length);
+    });
+  } catch (e) { if (!lib.albums.length) notes.push("saved albums"); }
+  try {
+    await eachPage("https://api.spotify.com/v1/me/playlists?limit=50", d => {
+      for (const p of d.items) {
+        const total = (p.items && p.items.total) ?? (p.tracks && p.tracks.total) ?? 0;
+        if (p && p.id && total > 0) lib.playlists.push({ id: p.id, total });
+      }
+      setStatus("reading playlists… " + lib.playlists.length);
+    });
+  } catch (e) { if (!lib.playlists.length) notes.push("playlists"); }
+  setStatus(notes.length ? "Couldn’t read: " + notes.join(", ") + "." : "", !!notes.length);
+}
+
+// ---- Pick a song ----
+async function playlistTrack() {
+  const sum = lib.playlists.reduce((a, p) => a + p.total, 0);
+  let r = rand(sum), pl = lib.playlists[0];
+  for (const p of lib.playlists) { if (r < p.total) { pl = p; break; } r -= p.total; }
+  const offset = rand(Math.ceil(pl.total / 50)) * 50, key = pl.id + ":" + offset;
+  if (!pageCache[key]) {
+    const base = "https://api.spotify.com/v1/playlists/" + pl.id;
+    let d;
+    try { d = await api(base + "/items?limit=50&offset=" + offset); }
+    catch { d = await api(base + "/tracks?limit=50&offset=" + offset); }
+    pageCache[key] = d.items.map(it => it.item || it.track)
+      .filter(t => t && t.id && t.type !== "episode" && !t.is_local).map(t => t.id);
+  }
+  const ids = pageCache[key];
+  return ids.length ? ids[rand(ids.length)] : null;
+}
+async function pickTrack() {
+  for (let tries = 0; tries < 6; tries++) {
+    const cats = [];
+    if ($("s-liked").checked && lib.liked.length) cats.push("liked");
+    if ($("s-albums").checked && lib.albums.length) cats.push("albums");
+    if ($("s-playlists").checked && lib.playlists.length) cats.push("playlists");
+    if (!cats.length) throw new Error("Pick at least one source with songs in it.");
+    const c = cats[rand(cats.length)];
+    let id = null;
+    try { id = c === "playlists" ? await playlistTrack() : lib[c][rand(lib[c].length)]; } catch (e) { if (cats.length === 1) throw e; }
+    if (id) return id;
+  }
+  throw new Error("Couldn’t find a song. Try another source.");
+}
+
+// ---- UI ----
+async function ask() {
+  const q = $("q").value.trim();
+  if (!q) return setStatus("Type a question first.", true);
+  setStatus(""); $("go").disabled = true;
+  try {
+    const id = await pickTrack();
+    $("qtext").textContent = q;
+    $("player").src = "https://open.spotify.com/embed/track/" + id;
+    $("ask").hidden = true; $("result").hidden = false;
+  } catch (e) { setStatus(e.message, true); }
+  $("go").disabled = false;
+}
+$("connect").onclick = login;
+$("go").onclick = ask;
+$("q").addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); ask(); } });
+$("again").onclick = () => {
+  $("result").hidden = true; $("player").removeAttribute("src");
+  $("q").value = ""; $("ask").hidden = false; $("q").focus();
+};
+
+// ---- Boot ----
+(async () => {
+  if (CLIENT_ID.startsWith("PASTE")) return setStatus("Add your Spotify Client ID at the top of the script.", true);
+  try {
+    const params = new URLSearchParams(location.search);
+    if (params.get("error")) throw new Error("Spotify login was cancelled.");
+    if (params.get("code")) { await exchange(params.get("code")); history.replaceState(null, "", REDIRECT); }
+    if (!(store.get("token") && Date.now() < Number(store.get("expires") || 0))) { store.del("token"); $("login").hidden = false; return; }
+    await loadLibrary();
+    $("sources").hidden = false; $("ask").hidden = false;
+  } catch (e) { $("login").hidden = false; setStatus(e.message, true); }
+})();
+</script>
+</body>
+</html>
